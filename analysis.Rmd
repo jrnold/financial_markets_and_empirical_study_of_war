@@ -1,0 +1,295 @@
+---
+title: "Foo"
+author: "Bar"
+date: "10/07/2014"
+output: html_document
+---
+
+
+- Union: 2.2 million (about 2 million whites, 200,000 blacks) (Vinovskis (1989), p. 40).
+- Confederate: 0.9 million  (Vinovskis (1989), p. 40)
+
+```{r}
+library("dplyr")
+library("lubridate")
+library("rstan")
+library("ggplot2")
+library("reshape2")
+
+datapath <- "~/Documents/research/acward/data/greer2005/"
+datafile <- "greer2005_weekly_casualties.csv"
+
+fill_na <- function(x, fill = 0) {
+  x[is.na(x)] <- fill
+  x
+}
+
+## Beta distribution method of moments
+beta_mm <- function(xbar, vbar) {
+  xx <- xbar * (1 - xbar)
+  a <- xbar * (xx / vbar - 1)
+  b <- (1 - xbar) * (xx / vbar - 1)
+  list(a = a, b = b)
+}
+
+casualties <- 
+  (read.csv(file.path(datapath, datafile),
+                      stringsAsFactors = FALSE)
+   %>% mutate(date = as.Date(date))
+   )
+
+casualties_week <- 
+  (group_by(casualties, date)
+   %>% mutate(confederate = fill_na(confederate),
+              union = fill_na(union))
+   %>% filter(battle != "attrition")
+   %>% summarise(confederate = sum(confederate),
+                 union = sum(union))
+   %>% merge(data.frame(date = seq(as.Date("1861-07-07"), as.Date("1865-06-18"), by = "week")),
+             all.x = TRUE)
+   %>% mutate(confederate = fill_na(confederate),
+              union = fill_na(union))
+   )
+
+```
+
+# Mexican American War Data
+
+```{r}
+mex_war <-
+  (read.csv("data/Mexican-American-War-Battles.csv", stringsAsFactors = FALSE)
+   %>% mutate(start_date = as.Date(start_date, "%m/%d/%Y"),
+              end_date = as.Date(end_date, "%m/%d/%Y"))
+  )
+mex_war_weeks <-
+  data.frame(date = seq(as.Date("1846-4-25"), as.Date("1848-2-2"), by = "weeks"))
+mex_war_weeks_days <-
+  (mex_war_weeks
+   %>% rowwise() %>% do(data.frame(week_date = .$date, date = .$date + 0:6))                                    
+   )
+mex_war_weeks <-
+  (merge(mex_war, mex_war_weeks_days, 
+         by.x = "end_date", by.y = "date")
+   %>% group_by(week_date)
+   %>% summarise(MEX = sum(MEX), USA = sum(USA))
+   %>% merge(mex_war_weeks, all.y = TRUE,
+             by.x = "week_date", by.y = "date")
+   %>% mutate(MEX = fill_na(MEX), USA = fill_na(USA))
+   %>% plyr::rename(c(week_date = "date"))
+   )
+```
+
+
+# Casualty distribution
+
+```{r}
+(ggplot(melt(casualties_week, id.vars = "date"), aes(x = date, y = value, color = variable))
+ + geom_line())
+```
+
+Plot of the distributions of weekly casualties:
+
+```{r}
+(ggplot(melt(casualties_week, id.vars = "date"), aes(x = value, color = variable))
+ + geom_density() + geom_rug())
+
+```
+
+What are the parameters of these distributions (assuming log-normal distribution)
+
+```{r}
+(melt(casualties_week, id.vars = "date")
+ %>% group_by(variable)
+ %>% summarise(casualties_mean = mean(log(value + 1)),
+               casualties_sd = sd(log(value + 1))
+               )
+ )
+```
+
+Constant model
+```{r}
+m1 <- stan_model("stan/model1.stan")
+```
+
+```{r}
+mex_war_data <- within(list(), {
+  y <- log(mex_war_weeks[ , c("USA", "MEX")] + 1)
+  n <- nrow(y)
+  mu_mean <- apply(y, 2, mean)
+  mu_cov <- diag(rep(1e6, 2))
+  sigma_mean <- apply(y, 2, sd)
+  sigma_var <- rep(1e6, 2)
+  rho_a <- 1
+  rho_b <- 1
+})            
+```
+
+Mexican war prior
+```{r}
+res_mex_war <- sampling(m1, data = mex_war_data)
+res_mex_war_summary <- summary(res_mex_war)[[1]]
+res_mex_war_summary_rho <- beta_mm(res_mex_war_summary["rho", "mean"],
+                                    res_mex_war_summary["rho", "sd"] ^ 2)
+
+mex_war_prior <- within(list(), {
+  mu_mean <- rep(res_mex_war_summary["mu[1]", "mean"], 2)
+  mu_cov <- diag(res_mex_war_summary["mu[1]", "sd"] ^ 2, 2)
+  sigma_mean <- rep(res_mex_war_summary["sigma[1]", "mean"], 2)
+  sigma_var <- rep(res_mex_war_summary["sigma[1]", "sd"] ^ 2, 2)
+  rho_a <- res_mex_war_summary_rho$a
+  rho_b <- res_mex_war_summary_rho$b
+})
+
+```
+
+Run the model on the entire dataset to get initial values
+
+
+
+Vague prior
+```{r}
+vague_prior <- within(list(), {
+  mu_mean <- apply(y, 2, mean)
+  mu_cov <- diag(rep(1e6, 2))
+  sigma_mean <- apply(y, 2, sd)
+  sigma_var <- rep(1e6, 2)
+  rho_a <- 1
+  rho_b <- 1
+})
+```
+
+Casualty data to use. Transform casualties to log values (+1 to account of weeks with 0 casualties).
+
+```{r}
+y <- log(as.matrix(casualties_week[ , c("union", "confederate")]) + 1)
+n <- nrow(y)
+```
+
+```{r}
+m1_data_vague_all <- vague_prior
+m1_data_vague_all$y <- y
+m1_data_vague_all$n <- n
+m1_results_vague_all <- sampling(m1, data = m1_data_vague_all, chains = 4)
+init <- apply(m1_results_vague_all, 2, relist, 
+              skeleton = rstan:::create_skeleton(m1_results_vague_all@model_pars, m1_results_vague_all@par_dims))
+
+```
+
+```{r}
+run_model_subset <- function(i, prior, data, mod) {
+  prior$y <- data[seq_len(i), ]
+  prior$n <- i
+  res <- sampling(mod, data = prior, verbose = FALSE)
+  tmp <- summary(res)[[1]]
+  tmp <- as.data.frame(tmp)
+  tmp$parameter <- rownames(tmp)
+  tmp$i <- i
+  tmp
+}
+
+
+results <- vector(length = n, mode = "list")
+
+results <- ldply(2:acw_data$n, run_model_subset,
+                 prior = vague_prior, data = y, mod = m1)
+results <- merge(results, mutate(casualties_week[ , "date", drop = FALSE], i = seq_along(date)))
+save(results, file = "m1_vague.Rdata")
+
+```
+
+
+```{r}
+(ggplot(filter(results, parameter %in% c("mu[1]", "mu[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = mean, ymin = mean - 2 * sd, ymax = mean + 2 * sd, colour = parameter))
+ + geom_ribbon(alpha = 0.2) + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(foo, parameter %in% c("mu[1]", "mu[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = i, y = sd, colour = parameter))
+ + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(results, parameter %in% c("sigma[1]", "sigma[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = mean, ymin = mean - 2 * sd, ymax = mean + 2 * sd, colour = parameter))
+ + geom_ribbon(alpha = 0.2) + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(results, parameter %in% c("sigma[1]", "sigma[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = sd, colour = parameter))
+ + geom_line())
+
+```
+
+# Mexican American War Prior
+
+```{r}
+results <- plyr::ldply(2:acw_data$n, run_model_subset,
+                 prior = mex_war_prior, data = y, mod = m1, .progress = "text")
+results <- merge(results, mutate(casualties_week[ , "date", drop = FALSE], i = seq_along(date)))
+save(results, file = "m1_mex.Rdata")
+```
+
+```{r}
+(ggplot(filter(results, parameter %in% c("mu[1]", "mu[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = mean, ymin = mean - 2 * sd, ymax = mean + 2 * sd, colour = parameter))
+ + geom_ribbon(alpha = 0.2) + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(foo, parameter %in% c("mu[1]", "mu[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = i, y = sd, colour = parameter))
+ + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(results, parameter %in% c("sigma[1]", "sigma[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = mean, ymin = mean - 2 * sd, ymax = mean + 2 * sd, colour = parameter))
+ + geom_ribbon(alpha = 0.2) + geom_line())
+
+```
+
+```{r}
+(ggplot(filter(results, parameter %in% c("sigma[1]", "sigma[2]")) %>% mutate(parameter = factor(parameter)),
+       aes(x = date, y = sd, colour = parameter))
+ + geom_line())
+
+```
+
+## Varying Data
+
+Time varying model
+```{r}
+  m2 <- stan_model("stan/model2.stan")
+```
+
+
+```{r}
+vague_prior_2 <-
+  within(list(), {
+      mu_mean <- rep(1, 2)
+      mu_cov <- diag(rep(4, 2))
+      sigma_mean <- rep(0.1, 2)
+      sigma_var <- rep(2, 2)
+      tau_mean <- rep(0.1, 2)
+      tau_var <- rep(2, 2)
+      rho_a <- 1
+      rho_b <- 1
+  })
+
+```
+
+```{r}
+data_vague_prior_2 <- vague_prior_2
+data_vague_prior_2$y <- y
+data_vague_prior_2$n <- n
+
+results_m2_vague_all <- sampling(m2, data = data_vague_prior_2, chains=1)
+```
