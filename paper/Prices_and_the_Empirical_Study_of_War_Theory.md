@@ -3,6 +3,40 @@ author: Jeffrey B. Arnold
 title: What can financial markets teach us about war?
 ---
 
+## Financial Markets and the Study of War
+
+Financial markets play two roles: 
+
+- Market as Observer, e.g. prediction market
+- Market as Actor, e.g. financier
+
+# What are financial markets
+
+  - Asset prices are expectations about the future
+  - Changes in asset prices have this causal interpretation - effect of event relative to counterfactual of what would have happened otherwise. Prior probability of the event is already priced in, so its causal effect is there.
+  - Informational content
+
+- Meaning of this? 
+
+  - Predictions as proxies for the truth
+
+    - efficient.
+	- efficient markets are good estimates of future prices, not necessarily the truth
+	- small n, heterogenous wars
+	- already the sort of informal historical research
+
+  - Interest in itself
+
+    - estimate of E(y | current beliefs)
+    - if it is a player ...
+
+- General thoughts about forecasting and determining commitment problems and informational problems
+
+  - Bayesian convergence - 1 over n. What do we learn? Dependent on prior, dependent on what counts as observation, ... dependent on posterior. 
+  - What if moving state space?
+  - How to determine what is a reasonable forecast and prediction?
+
+
 What can prices from financial markets tell us about war?
 
 - Prices can be used in two ways to make inferences about war: indirect and direct
